@@ -53,22 +53,22 @@ int main() {
                     if (grab > 0.8f) {
                         cout << "MAIN HAND CLENCHED -> DRONE HOVER MODE" << endl;
                     } else {
-                        /*cout << "Pitch: " << pitch
+                        cout << "Pitch: " << pitch
                              << " | Roll: " << roll
-                             << " | Yaw: " << yaw << endl;*/
+                             << " | Yaw: " << yaw << endl;
 
-                        if (pitch > 15) cout << "BACKWARD" << endl;
-                        else if (pitch < -15) cout << "FORWARD" << endl;
-                        if (roll > 15) cout << "LEFT" << endl;
-                        else if (roll < -15) cout << "RIGHT" << endl;
+                        if (pitch > 4.5) cout << "BACKWARD" << endl;
+                        else if (pitch < -4.5) cout << "FORWARD" << endl;
+                        if (roll > 1 && roll < 175) cout << "LEFT" << endl;
+                        else if (roll < 0 && roll > -175) cout << "RIGHT" << endl;
                     }
 
                     // ✋ Secondary hand controls altitude
                     if (altHand) {
                         float grab2 = altHand->grab_strength;
 
-                        if (grab2 < 0.3f)       cout << "SECOND HAND OPEN -> ASCEND" << endl;
-                        else if (grab2 > 0.8f)  cout << "️ SECOND HAND FIST -> DESCEND" << endl;
+                        if (grab2 < 0.1f)       cout << "SECOND HAND OPEN -> ASCEND" << endl;
+                        else if (grab2 > 0.95f)  cout << "️ SECOND HAND FIST -> DESCEND" << endl;
                         else                    cout << "SECOND HAND RELAXED -> HOLD ALTITUDE" << endl;
                     }
 
