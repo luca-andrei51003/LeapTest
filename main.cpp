@@ -489,11 +489,11 @@ int main() {
                         thrust_pct = 50.0f;
                         x = 0; y = 0; r = 0;
                     } else {
-                        if (pitch < -4.5f)      x = +400;   // forward
-                        else if (pitch > 4.5f)  x = -400;   // backward
+                        if (pitch < -4.5f)      x = +1000;   // forward
+                        else if (pitch > 4.5f)  x = -1000;   // backward
 
-                        if (roll < 0 && roll > -175)        y = +400;   // right
-                        else if (roll > 1 && roll < 175)    y = -400;   // left
+                        if (roll < 0 && roll > -175)        y = +1000;   // right
+                        else if (roll > 1 && roll < 175)    y = -1000;   // left
 
                         // yaw optional
                         (void)yaw;
