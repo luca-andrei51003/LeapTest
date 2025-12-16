@@ -467,6 +467,15 @@ int main() {
                          << " | Thrust%: " << thrust_pct
                          << (grab > 0.9f ? "  [DEAD-MAN]\n" : "\n");
 
+                    if (grab > 0.9f) {
+                        cout << "MAIN HAND CLENCHED -> DRONE HOVER MODE\n";
+                    } else {
+                        if (pitch > 4.5)  cout << "BACKWARD\n";
+                        else if (pitch < -4.5) cout << "FORWARD\n";
+                        if (roll > 1 && roll < 175)      cout << "LEFT\n";
+                        else if (roll < 0 && roll > -175) cout << "RIGHT\n";
+                    }
+
                     if (!mav.hasSeenVehicleHeartbeat()) {
                         cout << "WARNING: not seeing vehicle heartbeat yet. Check TELEM1 wiring/params/baud.\n";
                     }
