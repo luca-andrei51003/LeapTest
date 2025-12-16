@@ -49,22 +49,35 @@ public:
     bool start(const char* ip, uint16_t port) {
         WSADATA wsa{};
         if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
-            cerr << "WSAStartup failed\n";
+            std::cerr << "WSAStartup failed\n";
             return false;
         }
 
         sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET) {
-            cerr << "UDP socket() failed\n";
+            std::cerr << "UDP socket() failed\n";
             WSACleanup();
             return false;
         }
 
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
-            cerr << "inet_pton failed for " << ip << "\n";
+        // Bind to an ephemeral local port so we can receive replies from Mission Planner
+        sockaddr_in local{};
+        local.sin_family = AF_INET;
+        local.sin_addr.s_addr = htonl(INADDR_ANY);
+        local.sin_port = htons(0); // ephemeral
+        if (bind(sock, (sockaddr*)&local, sizeof(local)) != 0) {
+            std::cerr << "UDP bind() failed, WSA=" << WSAGetLastError() << "\n";
+            closesocket(sock);
+            sock = INVALID_SOCKET;
+            WSACleanup();
+            return false;
+        }
+
+        memset(&mpAddr, 0, sizeof(mpAddr));
+        mpAddr.sin_family = AF_INET;
+        mpAddr.sin_port = htons(port);
+        if (inet_pton(AF_INET, ip, &mpAddr.sin_addr) != 1) {
+            std::cerr << "inet_pton failed for " << ip << "\n";
             closesocket(sock);
             sock = INVALID_SOCKET;
             WSACleanup();
@@ -84,23 +97,46 @@ public:
         WSACleanup();
     }
 
-    // Send a fully-formed MAVLink packet buffer (what mavlink_msg_to_send_buffer produces)
+    // Send a fully formed MAVLink packet buffer
     void sendPacket(const uint8_t* data, size_t len) {
         if (!running.load() || sock == INVALID_SOCKET) return;
-        if (len == 0) return;
-        sendto(sock, (const char*)data, (int)len, 0, (sockaddr*)&addr, sizeof(addr));
+        if (!data || len == 0) return;
+        sendto(sock, (const char*)data, (int)len, 0, (sockaddr*)&mpAddr, sizeof(mpAddr));
     }
 
-    // Send a MAVLink message by serializing it to a packet
+    // Convenience: send a mavlink_message_t by serializing it to a packet
     void sendMessage(const mavlink_message_t& msg) {
         uint8_t buf[MAVLINK_MAX_PACKET_LEN];
         uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
         sendPacket(buf, len);
     }
 
+    // Receive raw UDP datagrams from Mission Planner (non-blocking with short select)
+    int recvPacket(uint8_t* out, int maxLen) {
+        if (!running.load() || sock == INVALID_SOCKET) return 0;
+
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(sock, &fds);
+
+        timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = 2000; // 2 ms
+
+        int r = select(0, &fds, nullptr, nullptr, &tv);
+        if (r <= 0) return 0;
+
+        sockaddr_in from{};
+        int fromLen = sizeof(from);
+        int n = recvfrom(sock, (char*)out, maxLen, 0, (sockaddr*)&from, &fromLen);
+        if (n <= 0) return 0;
+
+        return n;
+    }
+
 private:
     SOCKET sock = INVALID_SOCKET;
-    sockaddr_in addr{};
+    sockaddr_in mpAddr{};
     std::atomic<bool> running{false};
 };
 
@@ -244,8 +280,23 @@ public:
         // Heartbeat thread: send GCS heartbeat
         hbThread = std::thread(&MavlinkBridge::heartbeatLoop, this);
 
+        udpRxThread = std::thread(&MavlinkBridge::udpToSerialLoop, this);
+
         return true;
     }
+
+    void udpToSerialLoop() {
+        uint8_t buf[2048];
+        while (running.load()) {
+            int n = udp.recvPacket(buf, (int)sizeof(buf));
+            if (n > 0) {
+                serial.writeBytes(buf, (size_t)n);  // forward MP commands to Pixhawk
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    }
+
 
     void stop() {
         running.store(false);
@@ -352,6 +403,7 @@ private:
 
     std::thread rxThread;
     std::thread hbThread;
+    std::thread udpRxThread;
 };
 
 // ======================= MAIN =======================
@@ -461,7 +513,7 @@ int main() {
 
                 // Console print
                 auto nowPrint = chrono::steady_clock::now();
-                if (chrono::duration_cast<chrono::milliseconds>(nowPrint - lastPrint).count() > 20) {
+                if (chrono::duration_cast<chrono::milliseconds>(nowPrint - lastPrint).count() > 50) {
                     cout << "Pitch: " << pitch
                          << " | Roll: "  << roll
                          << " | Thrust%: " << thrust_pct
