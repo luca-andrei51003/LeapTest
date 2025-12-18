@@ -481,14 +481,13 @@ int main() {
 
                 // Send MANUAL_CONTROL @ ~20 Hz
                 auto now = chrono::steady_clock::now();
-                if (chrono::duration_cast<chrono::milliseconds>(now - lastSend).count() >= 30) {
-                    int16_t x = 0, y = 0, r = 0, z = 0;
+                if (chrono::duration_cast<chrono::milliseconds>(now - lastSend).count() >= 1) {
+                    int16_t x = 0, y = 0, r = 0;
 
                     // Dead-man: reset thrust to neutral and neutral sticks
                     if (grab > 0.9f) {
-                        thrust_pct = 50.0f;
+                        thrust_pct = 15.0f;
                         x = 0; y = 0; r = 0;
-                        z = 100;
                     } else {
                         if (pitch < -4.5f)      x = -900;   // forward
                         else if (pitch > 4.5f)  x = +900;   // backward
@@ -498,21 +497,18 @@ int main() {
 
                         if (yaw > -155 && yaw < -70)      r = -900;
                         if ((yaw < -170 && yaw > -180) || (yaw < 180 && yaw > 100))      r = +900;
-
-                        if (grab < 0.1f)
-                            z = 900;
                         //if (yaw)
                         // yaw optional
                         //(void)yaw;
                     }
 
-                    //int16_t z = thrustPercentToAxis(thrust_pct);
+                    int16_t z = thrustPercentToAxis(thrust_pct);
 
                     // Safety clamps
-                    x = clampi(x, -1000, 1000);
-                    y = clampi(y, -1000, 1000);
-                    r = clampi(r, -1000, 1000);
-                    z = clampi(z, 0, 1000);
+                    x = clampi(x, -300, 300);
+                    y = clampi(y, -300, 300);
+                    r = clampi(r, -300, 300);
+                    z = clampi(z, 0, 300);
 
                     mav.sendManualControl(x, y, z, r);
                     lastSend = now;
