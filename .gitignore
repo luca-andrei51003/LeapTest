@@ -1,0 +1,15 @@
+# Build output
+cmake-build-debug/
+cmake-build-release/
+build/
+out/
+
+# IDE
+.vs/
+
+# Local Claude Code settings
+.claude/
+
+# Windows
+Thumbs.db
+Desktop.ini
