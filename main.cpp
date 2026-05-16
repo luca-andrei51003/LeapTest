@@ -25,7 +25,7 @@ using namespace std;
 
 // ======================= CONFIG =======================
 // Serial (SiK USB radio)
-static const char* SERIAL_PORT_NAME = "COM6";
+static const char* SERIAL_PORT_NAME = "COM3";
 
 // IMPORTANT: SiK V3 default is 57600. Pixhawk TELEM1 commonly 57600.
 // Use 57600 unless you reconfigure BOTH radios AND SERIAL1_BAUD on Pixhawk.
@@ -438,7 +438,10 @@ int main() {
     auto lastPrint = chrono::steady_clock::now();
     auto lastSend  = chrono::steady_clock::now();
 
-    float thrust_pct = 50.0f;      // 0..100
+    float thrust_pct = 0.0f; // 0..100
+    float grab2_steps = 20.0f; //this is the number of altitude hand steps
+    float angle_resolution = 3.14f/grab2_steps; //this gives the resolution of the thrust hand (altitude)
+    float thrust_sum = 0.0f;
     const float thrust_min  = 0.0f;
     const float thrust_max  = 90.0f;
 
@@ -461,45 +464,49 @@ int main() {
                 float grab = mainHand->grab_strength;
                 LEAP_VECTOR dir  = mainHand->palm.direction;
                 LEAP_VECTOR norm = mainHand->palm.normal;
-
+/*
                 float pitch = atan2f(dir.y, -dir.z) * RAD_TO_DEG;
                 float roll  = atan2f(norm.x, norm.y) * RAD_TO_DEG;
                 float yaw   = atan2f(dir.x, dir.z) * RAD_TO_DEG;
-
-                // Altitude via secondary hand: open -> higher thrust, fist -> lower thrust
+*/
+                float pitch = atan2f(dir.y, -dir.z) * RAD_TO_DEG;
+                float yaw   = atan2f(dir.x, -dir.z) * RAD_TO_DEG;
+                float roll  = atan2f(norm.x, -norm.y) * RAD_TO_DEG;
+                // Altitude via secondary hand: grab_angle (0..pi) maps to thrust
                 if (altHand) {
-                    float grab2 = altHand->grab_strength; // 0=open, 1=fist
-                    const float step_size = 0.05f;
-
-                    float inv = 1.0f - grab2;
-                    int step_index = static_cast<int>(inv / step_size); // 0..20
-                    float thrust_from_step =
-                        thrust_min + step_index * ((thrust_max - thrust_min) * step_size);
-
-                    thrust_pct = clampf(thrust_from_step, thrust_min, thrust_max);
+                    float grab2 = altHand->grab_angle;
+                    thrust_pct = 0.5f + grab2_steps*grab2/3.14f;
                 }
-
+                /*auto nowAdd = chrono::steady_clock::now();
+                if (chrono::duration_cast<chrono::milliseconds>(nowAdd - lastSend).count() >= 60) {
+                    if (smooth_step++ <= smooth_precision)
+                        thrust_sum += thrust_pct;
+                    else {
+                        smooth_step = 1;
+                        smooth_thrust = thrust_sum/smooth_precision;
+                        thrust_sum = 0;
+                        thrust_pct = smooth_thrust;
+                    }
+                }
+                */
                 // Send MANUAL_CONTROL @ ~20 Hz
                 auto now = chrono::steady_clock::now();
-                if (chrono::duration_cast<chrono::milliseconds>(now - lastSend).count() >= 1) {
+                if (chrono::duration_cast<chrono::milliseconds>(now - lastSend).count() >= 50) {
                     int16_t x = 0, y = 0, r = 0;
-
                     // Dead-man: reset thrust to neutral and neutral sticks
                     if (grab > 0.9f) {
-                        thrust_pct = 15.0f;
+                        thrust_pct = 60.0f;
                         x = 0; y = 0; r = 0;
                     } else {
-                        if (pitch < -4.5f)      x = -900;   // forward
-                        else if (pitch > 4.5f)  x = +900;   // backward
+                        if (pitch < -7.5f)      x = -900;   // forward
+                        else if (pitch > 7.5f)  x = +900;   // backward
 
-                        if (roll < 0 && roll > -175)        y = +900;   // right
-                        else if (roll > 1 && roll < 175)    y = -900;   // left
+                        if (roll < -8 && roll > -172)        y = +900;   // right
+                        else if (roll > 5 && roll < 172)    y = -900;   // left
 
-                        if (yaw > -155 && yaw < -70)      r = -900;
-                        if ((yaw < -170 && yaw > -180) || (yaw < 180 && yaw > 100))      r = +900;
-                        //if (yaw)
-                        // yaw optional
-                        //(void)yaw;
+                        if      (yaw > -5)  r = -900;   // left turn
+                        else if (yaw < -35) r = +900;   // right turn
+                        // dead zone: -35...-5 (~30 deg centered on neutral ~-20)
                     }
 
                     int16_t z = thrustPercentToAxis(thrust_pct);
@@ -508,7 +515,7 @@ int main() {
                     x = clampi(x, -300, 300);
                     y = clampi(y, -300, 300);
                     r = clampi(r, -300, 300);
-                    z = clampi(z, 0, 300);
+                    z = clampi(z, 0, 850);
 
                     mav.sendManualControl(x, y, z, r);
                     lastSend = now;
@@ -516,20 +523,23 @@ int main() {
 
                 // Console print
                 auto nowPrint = chrono::steady_clock::now();
-                if (chrono::duration_cast<chrono::milliseconds>(nowPrint - lastPrint).count() > 50) {
+                if (chrono::duration_cast<chrono::milliseconds>(nowPrint - lastPrint).count() > 20) {
                     cout << "Pitch: " << pitch
                          << " | Roll: "  << roll
                          << " | Thrust%: " << thrust_pct
                          << " | Yaw: "  << yaw
                          << (grab > 0.9f ? "  [DEAD-MAN]\n" : "\n");
+                    if (altHand) {
+                        cout<<endl<<1.0f-altHand->grab_strength<<"   "<<altHand->grab_angle<<endl;
 
+                    }
                     if (grab > 0.9f) {
                         cout << "MAIN HAND CLENCHED -> DRONE HOVER MODE\n";
                     } else {
-                        if (pitch > 4.5)  cout << "BACKWARD\n";
-                        else if (pitch < -4.5) cout << "FORWARD\n";
-                        if (roll > 1 && roll < 175)      cout << "LEFT\n";
-                        else if (roll < 0 && roll > -175) cout << "RIGHT\n";
+                        if (pitch > 7.5)  cout << "BACKWARD\n";
+                        else if (pitch < -7.5) cout << "FORWARD\n";
+                        if (roll > 5 && roll < 172)      cout << "LEFT\n";
+                        else if (roll < -8 && roll > -172) cout << "RIGHT\n";
                     }
 
                     if (!mav.hasSeenVehicleHeartbeat()) {
