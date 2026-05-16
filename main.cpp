@@ -472,10 +472,10 @@ int main() {
                 float pitch = atan2f(dir.y, -dir.z) * RAD_TO_DEG;
                 float yaw   = atan2f(dir.x, -dir.z) * RAD_TO_DEG;
                 float roll  = atan2f(norm.x, -norm.y) * RAD_TO_DEG;
-                // Altitude via secondary hand: grab_angle (0..pi) maps to thrust
+                // Altitude via secondary hand: open hand = high thrust, closed fist = low thrust
                 if (altHand) {
                     float grab2 = altHand->grab_angle;
-                    thrust_pct = 0.5f + grab2_steps*grab2/3.14f;
+                    thrust_pct = 0.5f + grab2_steps * (3.14f - grab2) / 3.14f;
                 }
                 /*auto nowAdd = chrono::steady_clock::now();
                 if (chrono::duration_cast<chrono::milliseconds>(nowAdd - lastSend).count() >= 60) {
