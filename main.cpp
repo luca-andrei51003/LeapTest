@@ -439,9 +439,6 @@ int main() {
     auto lastSend  = chrono::steady_clock::now();
 
     float thrust_pct = 0.0f; // 0..100
-    float grab2_steps = 20.0f; //this is the number of altitude hand steps
-    float angle_resolution = 3.14f/grab2_steps; //this gives the resolution of the thrust hand (altitude)
-    float thrust_sum = 0.0f;
     const float thrust_min  = 0.0f;
     const float thrust_max  = 90.0f;
 
@@ -474,8 +471,8 @@ int main() {
                 float roll  = atan2f(norm.x, -norm.y) * RAD_TO_DEG;
                 // Altitude via secondary hand: open hand = high thrust, closed fist = low thrust
                 if (altHand) {
-                    float grab2 = altHand->grab_angle;
-                    thrust_pct = 0.5f + grab2_steps * (3.14f - grab2) / 3.14f;
+                    float grab2 = altHand->grab_angle; // 0 = open, ~pi = fist
+                    thrust_pct = (3.14f - grab2) / 3.14f * 90.0f; // maps to 0..90%
                 }
                 /*auto nowAdd = chrono::steady_clock::now();
                 if (chrono::duration_cast<chrono::milliseconds>(nowAdd - lastSend).count() >= 60) {
@@ -495,14 +492,14 @@ int main() {
                     int16_t x = 0, y = 0, r = 0;
                     // Dead-man: reset thrust to neutral and neutral sticks
                     if (grab > 0.9f) {
-                        thrust_pct = 60.0f;
+                        thrust_pct = 15.0f;
                         x = 0; y = 0; r = 0;
                     } else {
                         if (pitch < -7.5f)      x = -900;   // forward
                         else if (pitch > 7.5f)  x = +900;   // backward
 
-                        if (roll < -8 && roll > -172)        y = +900;   // right
-                        else if (roll > 5 && roll < 172)    y = -900;   // left
+                        if (roll < -10 && roll > -172)        y = +900;   // right
+                        else if (roll > 7 && roll < 172)    y = -900;   // left
 
                         if      (yaw > -5)  r = -900;   // left turn
                         else if (yaw < -35) r = +900;   // right turn
@@ -512,9 +509,9 @@ int main() {
                     int16_t z = thrustPercentToAxis(thrust_pct);
 
                     // Safety clamps
-                    x = clampi(x, -300, 300);
-                    y = clampi(y, -300, 300);
-                    r = clampi(r, -300, 300);
+                    x = clampi(x, -100, 100);
+                    y = clampi(y, -100, 100);
+                    r = clampi(r, -100, 100);
                     z = clampi(z, 0, 850);
 
                     mav.sendManualControl(x, y, z, r);
