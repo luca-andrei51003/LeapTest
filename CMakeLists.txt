@@ -14,6 +14,7 @@ target_link_libraries(LeapTest LeapC)
 
 add_executable(LeapDroneGui
         main.cpp
+        gui.cpp
 
         third_party/imgui/imgui.cpp
         third_party/imgui/imgui_draw.cpp
@@ -33,9 +34,11 @@ target_include_directories(LeapDroneGui PRIVATE
 target_compile_definitions(LeapDroneGui PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
+        LEAP_GUI
 )
 
 target_link_libraries(LeapDroneGui PRIVATE
+        LeapC
         ws2_32
         d3d11
         dxgi

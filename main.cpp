@@ -8,6 +8,8 @@
 #include <mutex>
 #include <cstdint>
 
+#include "app.h"
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
@@ -42,6 +44,11 @@ static const uint8_t VEHICLE_SYSID = 1;
 // UDP mirror: Mission Planner listens by default on 14550
 static const char* UDP_IP   = "127.0.0.1";
 static const uint16_t UDP_PORT = 14550;
+
+// Dead-man (right hand clenched): when grab_strength exceeds the threshold,
+// neutralize the attitude sticks and reduce throttle to a safe level.
+static const float DEADMAN_GRAB_THRESHOLD = 0.9f;  // right-hand grab_strength (0 open .. 1 fist)
+static const float DEADMAN_THRUST_PCT     = 20.0f; // throttle % held while dead-man is engaged
 
 // ======================= UDP MIRROR =======================
 class UdpMirror {
@@ -406,33 +413,43 @@ private:
     std::thread udpRxThread;
 };
 
-// ======================= MAIN =======================
-int main() {
-    // Bridge: COM6 <-> Pixhawk, and mirror everything to UDP:14550 for Mission Planner
+// ======================= CONTROL LOOP =======================
+// Runs the Leap -> MAVLink control logic until `running` becomes false.
+// Continuously publishes live values into `state` so a GUI can render them.
+// verbose=true also prints to the console (used by the console build).
+void runControlLoop(TelemetryState& state, std::atomic<bool>& running, bool verbose) {
+    // Bridge: COM3 <-> Pixhawk, and mirror everything to UDP:14550 for Mission Planner
     MavlinkBridge mav;
     if (!mav.start(SERIAL_PORT_NAME, SERIAL_BAUDRATE, UDP_IP, UDP_PORT)) {
         cerr << "Failed to start MAVLink bridge on " << SERIAL_PORT_NAME << "\n";
-        return -1;
+        running.store(false);
+        return;
     }
+    state.serialOpen.store(true);
 
     // Leap Motion connection
     LEAP_CONNECTION connection = nullptr;
     if (LeapCreateConnection(nullptr, &connection) != eLeapRS_Success) {
         cerr << "Failed to create Leap connection.\n";
         mav.stop();
-        return -1;
+        running.store(false);
+        return;
     }
 
     if (LeapOpenConnection(connection) != eLeapRS_Success) {
         cerr << "Failed to open Leap connection.\n";
         LeapDestroyConnection(connection);
         mav.stop();
-        return -1;
+        running.store(false);
+        return;
     }
+    state.leapConnected.store(true);
 
-    cout << "Leap Motion connected.\n";
-    cout << "MAVLink bridge running: Serial(" << SERIAL_PORT_NAME << " @57600) -> Pixhawk, mirrored to UDP 127.0.0.1:14550\n";
-    cout << "IMPORTANT: Mission Planner must connect via UDP (NOT COM6).\n";
+    if (verbose) {
+        cout << "Leap Motion connected.\n";
+        cout << "MAVLink bridge running: Serial(" << SERIAL_PORT_NAME << " @57600) -> Pixhawk, mirrored to UDP 127.0.0.1:14550\n";
+        cout << "IMPORTANT: Mission Planner must connect via UDP (NOT COM3).\n";
+    }
 
     LEAP_CONNECTION_MESSAGE msg;
     auto lastPrint = chrono::steady_clock::now();
@@ -441,8 +458,11 @@ int main() {
     float thrust_pct = 0.0f; // 0..100
     const float thrust_min  = 0.0f;
     const float thrust_max  = 90.0f;
+    float grab2_steps = 22.0f;
 
-    while (true) {
+    while (running.load()) {
+        state.vehicleHeartbeat.store(mav.hasSeenVehicleHeartbeat());
+
         if (LeapPollConnection(connection, 10, &msg) == eLeapRS_Success &&
             msg.type == eLeapEventType_Tracking) {
 
@@ -457,6 +477,12 @@ int main() {
                 else                                  altHand  = &hand;
             }
 
+            state.mainHandPresent.store(mainHand != nullptr);
+            state.altHandPresent.store(altHand != nullptr);
+            state.framesProcessed.fetch_add(1);
+            state.lastFrameMs.store(chrono::duration_cast<chrono::milliseconds>(
+                chrono::steady_clock::now().time_since_epoch()).count());
+
             if (mainHand) {
                 float grab = mainHand->grab_strength;
                 LEAP_VECTOR dir  = mainHand->palm.direction;
@@ -469,11 +495,26 @@ int main() {
                 float pitch = atan2f(dir.y, -dir.z) * RAD_TO_DEG;
                 float yaw   = atan2f(dir.x, -dir.z) * RAD_TO_DEG;
                 float roll  = atan2f(norm.x, -norm.y) * RAD_TO_DEG;
+
+                state.pitch.store(pitch);
+                state.roll.store(roll);
+                state.yaw.store(yaw);
+                state.mainGrab.store(grab);
+
                 // Altitude via secondary hand: open hand = high thrust, closed fist = low thrust
                 if (altHand) {
-                    float grab2 = altHand->grab_angle; // 0 = open, ~pi = fist
-                    thrust_pct = (3.14f - grab2) / 3.14f * 90.0f; // maps to 0..90%
+                    state.altGrabAngle.store(altHand->grab_angle);
+                    // float grab2 = 1/(altHand->grab_angle); // 0 = open, ~pi = fist
+                    //thrust_pct = (3.14f - grab2) / 3.14f * 90.0f; // maps to 0..90%
+                    // thrust_pct = 0.5f + grab2_steps * grab2/3.14f * 2.6f;
+                    if (altHand->grab_angle > 2.0f)
+                        thrust_pct = 20.0f;
+                    else if (altHand->grab_angle <= 1.0f && altHand->grab_angle > 0.15f)
+                        thrust_pct = 86.0f;
+                    else if (altHand->grab_angle <= 0.15f)
+                        thrust_pct = 87.0f;
                 }
+                state.thrustPct.store(thrust_pct);
                 /*auto nowAdd = chrono::steady_clock::now();
                 if (chrono::duration_cast<chrono::milliseconds>(nowAdd - lastSend).count() >= 60) {
                     if (smooth_step++ <= smooth_precision)
@@ -490,53 +531,60 @@ int main() {
                 auto now = chrono::steady_clock::now();
                 if (chrono::duration_cast<chrono::milliseconds>(now - lastSend).count() >= 50) {
                     int16_t x = 0, y = 0, r = 0;
-                    // Dead-man: reset thrust to neutral and neutral sticks
-                    if (grab > 0.9f) {
-                        thrust_pct = 15.0f;
+                    // Dead-man: reduce throttle to a safe level and neutralize sticks
+                    if (grab > DEADMAN_GRAB_THRESHOLD) {
+                        thrust_pct = DEADMAN_THRUST_PCT;
                         x = 0; y = 0; r = 0;
                     } else {
-                        if (pitch < -7.5f)      x = -900;   // forward
-                        else if (pitch > 7.5f)  x = +900;   // backward
+                        if (pitch < -7.5f)      x = +900;   // forward
+                        else if (pitch > 7.5f)  x = -900;   // backward
 
-                        if (roll < -10 && roll > -172)        y = +900;   // right
+                        if (roll < -20 && roll > -172)        y = +900;   // right
                         else if (roll > 7 && roll < 172)    y = -900;   // left
 
-                        if      (yaw > -5)  r = -900;   // left turn
-                        else if (yaw < -35) r = +900;   // right turn
+                        if      (yaw > -7)  r = +900;   // right turn
+                        else if (yaw < -35) r = -900;   // left turn
+                        //r = 0;
                         // dead zone: -35...-5 (~30 deg centered on neutral ~-20)
                     }
 
                     int16_t z = thrustPercentToAxis(thrust_pct);
-
+                    int yr_clamp = 680;
+                    int x_clamp = 680;
                     // Safety clamps
-                    x = clampi(x, -100, 100);
-                    y = clampi(y, -100, 100);
-                    r = clampi(r, -100, 100);
-                    z = clampi(z, 0, 850);
-
+                    x = clampi(x, -x_clamp, yr_clamp); //fata spate
+                    y = clampi(y, -yr_clamp, yr_clamp); //stanga dreapta
+                    r = clampi(r, -yr_clamp, yr_clamp);
+                    z = clampi(z, 0, 865);
                     mav.sendManualControl(x, y, z, r);
+                    state.sentX.store(x);
+                    state.sentY.store(y);
+                    state.sentZ.store(z);
+                    state.sentR.store(r);
+                    state.deadMan.store(grab > DEADMAN_GRAB_THRESHOLD);
+                    state.packetsSent.fetch_add(1);
                     lastSend = now;
                 }
 
                 // Console print
                 auto nowPrint = chrono::steady_clock::now();
-                if (chrono::duration_cast<chrono::milliseconds>(nowPrint - lastPrint).count() > 20) {
+                if (verbose && chrono::duration_cast<chrono::milliseconds>(nowPrint - lastPrint).count() > 20) {
                     cout << "Pitch: " << pitch
                          << " | Roll: "  << roll
                          << " | Thrust%: " << thrust_pct
                          << " | Yaw: "  << yaw
-                         << (grab > 0.9f ? "  [DEAD-MAN]\n" : "\n");
+                         << (grab > DEADMAN_GRAB_THRESHOLD ? "  [DEAD-MAN]\n" : "\n");
                     if (altHand) {
                         cout<<endl<<1.0f-altHand->grab_strength<<"   "<<altHand->grab_angle<<endl;
 
                     }
-                    if (grab > 0.9f) {
+                    if (grab > DEADMAN_GRAB_THRESHOLD) {
                         cout << "MAIN HAND CLENCHED -> DRONE HOVER MODE\n";
                     } else {
                         if (pitch > 7.5)  cout << "BACKWARD\n";
                         else if (pitch < -7.5) cout << "FORWARD\n";
-                        if (roll > 5 && roll < 172)      cout << "LEFT\n";
-                        else if (roll < -8 && roll > -172) cout << "RIGHT\n";
+                        if (roll > 7 && roll < 172)      cout << "LEFT\n";
+                        else if (roll < -20 && roll > -172) cout << "RIGHT\n";
                     }
 
                     if (!mav.hasSeenVehicleHeartbeat()) {
@@ -549,9 +597,17 @@ int main() {
         }
     }
 
-    // Not reached normally
     LeapCloseConnection(connection);
     LeapDestroyConnection(connection);
     mav.stop();
+}
+
+#ifndef LEAP_GUI
+// ======================= CONSOLE ENTRY POINT =======================
+int main() {
+    std::atomic<bool> running{true};
+    TelemetryState state;
+    runControlLoop(state, running, /*verbose=*/true);
     return 0;
 }
+#endif
